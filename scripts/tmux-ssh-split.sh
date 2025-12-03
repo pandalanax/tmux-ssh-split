@@ -261,22 +261,26 @@ extract_mosh_host() {
 
 get_child_cmds() {
   local ppid="$1"
+  local found=1  
 
-  # macOS
-  if is_macos
-  then
-    # Untested, contributed by @liuruibin
-    # https://github.com/pschmitt/tmux-ssh-split/pull/6
-    # NOTE Shouldn't we use "ps a" here?
-    # shellcheck disable=SC2009
-    ps -o ppid=,pid=,command= | \
-      awk '/^\s*'"${ppid}"'\s+/ { $1=""; print $0 }'
-    return "$?"
+  if is_macos; then
+    local children pid cmd
+    children=$(pgrep -P "$ppid")
+    for pid in $children; do
+      cmd=$(ps -p "$pid" -o command= | tail -n1)
+      echo "$pid $cmd"
+      # Recurse into grandchildren
+      get_child_cmds "$pid"
+      # If recursion found something, mark as found
+      [[ $? -eq 0 ]] && found=0
+    done
+
+    return $found
   fi
 
-  # Linux
   ps -o pid=,command= -g "$ppid"
 }
+
 
 # $1 is optional, disable 2120
 # shellcheck disable=2120
