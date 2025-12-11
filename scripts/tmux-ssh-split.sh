@@ -225,7 +225,8 @@ inject_remote_cwd() {
   then
       ssh_command="$ssh_command -- sh -c '${remote_command[*]}'"
   else
-    # ⛔ Prevent double-injection
+    # check if split is a split of a before done split
+    # Prevent double-injection by cleaning the command here
     if [[ "$ssh_command" == *"exec \${SHELL"* ]]; then
       # ssh_command="$ssh_command"
       ssh_command=$(set -- $ssh_command; echo "$1 $2")
@@ -356,14 +357,12 @@ get_ssh_command() {
         continue
       fi
       child_cmd="ssh $host -t"
-      echo "####################################################################################################"
     fi
 
     # Check if the command is an oil ssh 
     if is_oil_ssh_connection "$child_cmd"
     then
       host=$(sed -E 's#^.*/ssh[[:space:]]+([^\ ]+).*#ssh \1#' <<< "$child_cmd")
-      # echo "####################################################################################################"
       if [[ -z "$host" ]]
       then
         echo "Could not extract hostname from oil-ssh command: $child_cmd" >&2
