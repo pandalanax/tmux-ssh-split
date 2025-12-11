@@ -72,6 +72,14 @@ is_mosh_command() {
   grep -qE '^[^ ]*(mosh|mosh-client) ' <<< "$1"
 }
 
+is_oil_ssh_command() {
+  grep -qE 'oil-ssh' <<< "$1"
+}
+
+is_oil_ssh_connection() {
+  grep -qE "===READY===" <<< "$1"
+}
+
 is_ssh_or_mosh_command() {
   # Filter out invalid commands
   if ! command -v -- "$(cut -d' ' -f1 <<< "$1")" &>/dev/null
@@ -85,7 +93,7 @@ is_ssh_or_mosh_command() {
     return 1
   fi
 
-  is_ssh_command "$1" || is_mosh_command "$1"
+  is_ssh_command "$1" || is_mosh_command "$1" || is_oil_ssh_command "$1"
 }
 
 strip_command() {
@@ -188,6 +196,7 @@ inject_ssh_env() {
 inject_remote_cwd() {
   local ssh_command="$1"
   local ssh_cwd
+    
 
   if ! ssh_cwd="$(get_remote_path)" || [[ -z "$ssh_cwd" ]]
   then
@@ -214,8 +223,13 @@ inject_remote_cwd() {
 
   if is_mosh_command "$ssh_command"
   then
-    ssh_command="$ssh_command -- sh -c '${remote_command[*]}'"
+      ssh_command="$ssh_command -- sh -c '${remote_command[*]}'"
   else
+    # ⛔ Prevent double-injection
+    if [[ "$ssh_command" == *"exec \${SHELL"* ]]; then
+      # ssh_command="$ssh_command"
+      ssh_command=$(set -- $ssh_command; echo "$1 $2")
+    fi
     ssh_command="$ssh_command -t '${remote_command[*]}'"
   fi
 
@@ -254,6 +268,11 @@ extract_ssh_host() {
   return 1
 }
 
+extract_oilssh_host() {
+  sed -nr 's#oil-ssh://([^/]+)/.*#\1#p' <<< "$1"
+
+}
+
 # FIXME This might not be the most reliable host extraction
 extract_mosh_host() {
   sed -nr 's/.*mosh-client -# ([^\s+])\s+.*/\1/p' <<< "$1"
@@ -261,7 +280,7 @@ extract_mosh_host() {
 
 get_child_cmds() {
   local ppid="$1"
-  local found=1  
+  local found=1 
 
   if is_macos; then
     local children pid cmd
@@ -275,7 +294,10 @@ get_child_cmds() {
       [[ $? -eq 0 ]] && found=0
     done
 
-    return $found
+    # return $found
+    # 
+
+
   fi
 
   ps -o pid=,command= -g "$ppid"
@@ -324,6 +346,33 @@ get_ssh_command() {
 
       child_cmd="LC_ALL=${LC_ALL:-en_US.UTF-8} mosh $host"
     fi
+
+    if is_oil_ssh_command "$child_cmd"
+    then
+      host="$(extract_oil_host "child_cmd")"
+      if [[ -z "$host" ]]
+      then
+        echo "Could not extract hostname from oil-ssh command: $child_cmd" >&2
+        continue
+      fi
+      child_cmd="ssh $host -t"
+      echo "####################################################################################################"
+    fi
+
+    # Check if the command is an oil ssh 
+    if is_oil_ssh_connection "$child_cmd"
+    then
+      host=$(sed -E 's#^.*/ssh[[:space:]]+([^\ ]+).*#ssh \1#' <<< "$child_cmd")
+      # echo "####################################################################################################"
+      if [[ -z "$host" ]]
+      then
+        echo "Could not extract hostname from oil-ssh command: $child_cmd" >&2
+        continue
+      fi
+      child_cmd=$host
+    fi
+
+
 
     echo "$child_pid $child_cmd"
     return 0
@@ -403,8 +452,15 @@ extract_path_from_ps1() {
 
   # Search for zsh hash dirs (eg: ~zsh/bin)
   local match
-  if match=$(grep -m 1 -oP '~[^\s]+' <<< "$line")
-  then
+  if is_macos; then
+  # macOS (BSD grep, supports -E)
+    match=$(grep -m 1 -oE '~[^ ]*' <<< "$line")
+  else
+    # Linux/BusyBox (safe BRE — no -E, no -P)
+    match=$(grep -m 1 -oP '~[^\s]+' <<< "$line")
+
+  fi
+  if [[ -n "$match" ]]; then
     # Remove trailing '$' or '#' (bash prompt char) and ']'
     # shellcheck disable=2001
     match=$(sed 's|[]$#/]*$||' <<< "${match}")
@@ -428,7 +484,11 @@ extract_path_from_ps1() {
     # 1. Remove trailing '$', '#', ']', and ' '(space)
     #    https://github.com/pschmitt/tmux-ssh-split/issues/17
     # 2. Remove quotes (eg: ' or ")
-    sed -r -e 's/[]$# ]+$//' -e "s/['\"]//g" <<< "${match}"
+    # sed -r -e 's/[]$# ]+$//' -e "s/['\"]//g" <<< "${match}"
+
+    # remove oil-ssh:// also
+    sed -r -e 's#^//[^/]+/##' -e 's/[]$# ]+$//' -e "s/['\"]//g" <<< "${match}"
+
     return
   fi
 
